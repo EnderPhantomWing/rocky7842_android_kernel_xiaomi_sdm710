@@ -48,16 +48,16 @@ on:
         type: boolean
 
 # ============================================================
-# 【关键】全局环境变量：Clang 版本与工具链路径统一控制
-# 想换版本时只改这里
+# 【关键】全局环境变量：Clang 版本统一控制
+# 换版本时只改 CLANG_TARBALL
 # ============================================================
 env:
-  # AOSP Clang 9.0.1 (r353983c) —— 适配 Linux 4.9 内核
-  CLANG_REPO: "https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r353983c"
-  CLANG_BRANCH: "10.0"
-  # 若改用 Clang 8.0，改为:
-  # CLANG_REPO: "https://github.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-4691093"
-  # CLANG_BRANCH: "9.0"
+  # AOSP 官方 Clang 9.0.1 (r353983c) tar.gz —— 适配 Linux 4.9 内核
+  # 换 Clang 8.0 示例:
+  #   https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android9-release/clang-4691093.tar.gz
+  # 换 Clang 9.0.8 示例:
+  #   https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android10-release/clang-r365631c.tar.gz
+  CLANG_TARBALL: "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android10-release/clang-r353983c.tar.gz"
 
 jobs:
   # ================================
@@ -210,17 +210,33 @@ jobs:
           find $GITHUB_WORKSPACE/kernel_workspace/gcc32 -maxdepth 3 -name "ld*" 2>/dev/null
 
       # ============================================================
-      # 【关键改动】用老版 Clang 9.0.1 替换 Clang 10
+      # 【关键改动】从 AOSP 官方 tar.gz 下载 Clang 9.0.1
+      # 优点：单一版本归档，解压后 bin/ 在根目录，结构干净
       # ============================================================
-      - name: 下载老版 Clang 工具链 (AOSP Clang 9.0.1 r353983c)
+      - name: 下载老版 Clang 工具链 (AOSP 官方 tar.gz, Clang 9.0.1 r353983c)
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
-          mkdir clang-aosp
-          git clone -q --depth=1 \
-            "${{ env.CLANG_REPO }}" \
-            -b "${{ env.CLANG_BRANCH }}" clang-aosp
+          rm -rf clang-aosp
+          mkdir -p clang-aosp
+
+          echo "=== 下载 Clang tar.gz ==="
+          echo "URL: ${{ env.CLANG_TARBALL }}"
+          wget -q --tries=3 --timeout=120 \
+            "${{ env.CLANG_TARBALL }}" \
+            -O clang.tar.gz \
+            || { echo "!! 下载 Clang 失败"; exit 1; }
+
+          echo "=== 解压 ==="
+          tar -xzf clang.tar.gz -C clang-aosp
+
+          echo "=== 检查目录结构 ==="
+          ls -la clang-aosp/ | head -n 20
+
           echo "=== Clang 版本信息 ==="
           $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/clang --version
+
+          echo "=== 检查 ld.lld / ld.gold ==="
+          ls -la $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/ | grep -E 'ld|lld|gold' || true
 
       - name: 下载内核源码
         run: |
@@ -230,7 +246,7 @@ jobs:
       - name: 设置 ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: build-kernel-sirius-sdm710-${{ matrix.root }}
+          key: build-kernel-sirius-sdm710-${{ matrix.root }}-clang9
           max-size: 2G
 
       - name: KernelSU - 应用旧版补丁
@@ -347,8 +363,7 @@ jobs:
           fi
 
       # ============================================================
-      # 【新增】老版 Clang 也建议补 pinctrl include（保险起见）
-      # 老 Clang 对隐式声明仍是 -Werror（4.9 内核后期 build 用 -Werror）
+      # pinctrl include 修复（drivers/ 全范围，兜底）
       # ============================================================
       - name: 修复 pinctrl include（drivers/ 全范围）
         run: |
@@ -480,8 +495,6 @@ jobs:
             echo "不启用 BBR..."
           fi
 
-          # 老 Clang 通常不需要 -Wno-error=sizeof-array-div（该警告在新 Clang 才出现）
-          # 保留空值以兼容 LXC/Docker 分支
           if [ "$ENABLE_LXC_DOCKER" = "true" ]; then
             KCFLAGS_EXTRA="-Wno-error=sizeof-array-div -fuse-ld=bfd"
           else
