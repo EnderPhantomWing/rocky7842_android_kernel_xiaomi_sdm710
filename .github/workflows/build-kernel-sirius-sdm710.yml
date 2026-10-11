@@ -279,20 +279,24 @@ jobs:
 
       # ============================================================
       # 【关键修复】adsprpc / ION 兼容性
-      #   1) ion_import_dma_buf_fd -> ion_import_dma_buf
+      #   1) ion_import_dma_buf_fd -> ion_import_dma_buf（全仓库）
       #   2) msm_ion_do_cache_offset_op 重复符号（在 msm_ion.h 中）
       # ============================================================
       - name: 修复 adsprpc ION API 兼容性 + 重复符号
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
 
-          echo "=== [1/2] 修复 ion_import_dma_buf_fd -> ion_import_dma_buf ==="
-          for f in drivers/char/adsprpc.c drivers/char/adsprpc_compat.c; do
-            if [ -f "$f" ]; then
-              sed -i 's/\bion_import_dma_buf_fd\b/ion_import_dma_buf/g' "$f"
-              echo "已处理: $f"
-            fi
+          echo "=== [1/2] 修复 ion_import_dma_buf_fd -> ion_import_dma_buf（全仓库）==="
+          # 全仓库扫描：不再局限于 adsprpc.c，qseecom.c 等也有
+          COUNT=0
+          for f in $(grep -rl '\bion_import_dma_buf_fd\b' --include='*.c' drivers/ include/ 2>/dev/null); do
+            sed -i 's/\bion_import_dma_buf_fd\b/ion_import_dma_buf/g' "$f"
+            echo "[已修复] $f"
+            COUNT=$((COUNT+1))
           done
+          echo "共修复 $COUNT 个文件"
+
+          echo "--- 全仓库残留检查 ---"
           if grep -Rn "ion_import_dma_buf_fd" drivers/ include/ 2>/dev/null; then
             echo "!! 仍有 ion_import_dma_buf_fd 残留"
           else
