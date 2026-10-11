@@ -279,10 +279,8 @@ jobs:
 
       # ============================================================
       # 【关键修复】adsprpc / ION 兼容性
-      #   1) ion_import_dma_buf_fd -> ion_import_dma_buf（保留）
-      #   2) msm_ion_do_cache_offset_op 重复符号
-      #      注意！该函数定义在头文件 msm_ion.h 里，不在 adsprpc.c 里
-      #      所以真正修复目标是：drivers/staging/android/ion/msm/msm_ion.h
+      #   1) ion_import_dma_buf_fd -> ion_import_dma_buf
+      #   2) msm_ion_do_cache_offset_op 重复符号（在 msm_ion.h 中）
       # ============================================================
       - name: 修复 adsprpc ION API 兼容性 + 重复符号
         run: |
@@ -308,24 +306,73 @@ jobs:
           else
             echo "--- 修复前 $HDR:200-215 ---"
             sed -n '200,215p' "$HDR"
-
-            # 情况 A：已经是 static / static inline，不动
             if grep -qE 'static[[:space:]]+(inline[[:space:]]+)?[^;]*msm_ion_do_cache_offset_op' "$HDR"; then
               echo "已经是 static (inline)，跳过"
             else
-              # 情况 B：给函数定义加 static inline
-              # 先尝试匹配 'int msm_ion_do_cache_offset_op('
               sed -i -E 's/^([[:space:]]*)int([[:space:]]+msm_ion_do_cache_offset_op[[:space:]]*\()/\1static inline int\2/' "$HDR"
-              # 再尝试其它返回类型
               sed -i -E 's/^([[:space:]]*)(void|long|unsigned[[:space:]]+long)([[:space:]]+msm_ion_do_cache_offset_op[[:space:]]*\()/\1static inline \2\3/' "$HDR"
             fi
-
             echo "--- 修复后 $HDR:200-215 ---"
             sed -n '200,215p' "$HDR"
-
-            echo "--- grep 检查 ---"
             grep -n "msm_ion_do_cache_offset_op" "$HDR" || echo "该文件里已无此符号"
           fi
+
+      # ============================================================
+      # 【通用修复】头文件里非 static 函数定义 -> static inline
+      #   已遇到：
+      #     - drivers/staging/android/ion/msm/msm_ion.h
+      #       msm_ion_do_cache_offset_op
+      #     - include/linux/usb_bam.h
+      #       usb_bam_alloc_fifos / usb_bam_free_fifos / msm_do_bam_disable_enable
+      #   以后遇到新头文件，只需在末尾加一行 fix_header_funcs 即可
+      # ============================================================
+      - name: 修复头文件中非 static 函数（防 multiple definition）
+        run: |
+          cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
+
+          fix_header_funcs() {
+            local HDR="$1"
+            shift
+            if [ ! -f "$HDR" ]; then
+              echo "[跳过] 文件不存在: $HDR"
+              return
+            fi
+            echo ""
+            echo "=============================================="
+            echo "处理头文件: $HDR"
+            echo "=============================================="
+
+            for FUNC in "$@"; do
+              echo "--- 函数: $FUNC ---"
+              if ! grep -q "\b$FUNC\b" "$HDR"; then
+                echo "  该文件中未找到此函数"
+                continue
+              fi
+              # 如果已经是 static / static inline，跳过
+              if grep -qE "static[[:space:]]+(inline[[:space:]]+)?[^;=]*\b$FUNC\b[[:space:]]*\(" "$HDR"; then
+                echo "  已是 static (inline)，跳过"
+                continue
+              fi
+              # 加 static inline
+              sed -i -E "s/^([[:space:]]*)(int|void|long|bool|ssize_t|size_t|unsigned[[:space:]]+int|unsigned[[:space:]]+long)([[:space:]]+${FUNC}[[:space:]]*\()/\1static inline \2\3/" "$HDR"
+              echo "  修改后："
+              grep -nE "[[:space:]]${FUNC}[[:space:]]*\(" "$HDR" | head -n 3 || true
+            done
+          }
+
+          # ---------- 已知需要修复的头文件 ----------
+          fix_header_funcs "include/linux/usb_bam.h" \
+            usb_bam_alloc_fifos \
+            usb_bam_free_fifos \
+            msm_do_bam_disable_enable
+
+          # ---------- 以后遇到新头文件在这里追加 ----------
+          # fix_header_funcs "include/linux/xxx.h" func_a func_b
+
+          echo ""
+          echo "--- 校验 usb_bam.h ---"
+          grep -nE "static[[:space:]]+inline[[:space:]]+.*(usb_bam_alloc_fifos|usb_bam_free_fifos|msm_do_bam_disable_enable)" \
+            include/linux/usb_bam.h || echo "!! usb_bam.h 修复异常，请检查"
 
       - name: pinctrl include 修复（drivers/ 全范围）
         run: |
