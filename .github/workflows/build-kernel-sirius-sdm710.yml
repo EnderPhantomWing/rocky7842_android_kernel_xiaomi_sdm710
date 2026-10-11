@@ -3,7 +3,6 @@ name: Build Kernel for sirius-SDM710
 on:
   workflow_dispatch:
     inputs:
-      # ========== Root 管理器选择（矩阵） ==========
       enable_all_roots:
         description: '构建所有 Root 管理器（矩阵构建）'
         required: false
@@ -19,8 +18,6 @@ on:
         required: false
         default: true
         type: boolean
-
-      # ========== 扩展功能 ==========
       enable_susfs:
         description: '启用 SUSFS'
         required: false
@@ -47,22 +44,11 @@ on:
         default: false
         type: boolean
 
-# ============================================================
-# 【关键】全局环境变量：Clang 版本统一控制
-# 换版本时只改 CLANG_TARBALL
-# ============================================================
 env:
   # AOSP 官方 Clang 9.0.1 (r353983c) tar.gz —— 适配 Linux 4.9 内核
-  # 换 Clang 8.0 示例:
-  #   https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android9-release/clang-4691093.tar.gz
-  # 换 Clang 9.0.8 示例:
-  #   https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android10-release/clang-r365631c.tar.gz
   CLANG_TARBALL: "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android10-release/clang-r353983c.tar.gz"
 
 jobs:
-  # ================================
-  # 1. 设置矩阵配置
-  # ================================
   setup-matrix:
     runs-on: ubuntu-latest
     outputs:
@@ -98,9 +84,6 @@ jobs:
           echo "Root 配置: $ROOT_CONFIGS"
           echo "总数: $TOTAL_COUNT"
 
-  # ================================
-  # 2. 计算发布标签（由矩阵共享）
-  # ================================
   prepare:
     needs: setup-matrix
     if: |
@@ -131,28 +114,15 @@ jobs:
             BASE="none"
           fi
           SUFFIX="$BASE"
-          if [ "$ENABLE_LXC_DOCKER" = "true" ]; then
-            SUFFIX="${SUFFIX}-Docker"
-          fi
-          if [ "$ENABLE_KVM" = "true" ]; then
-            SUFFIX="${SUFFIX}-KVM"
-          fi
-          if [ "$ENABLE_BBR" = "true" ]; then
-            SUFFIX="${SUFFIX}-BBR"
-          fi
-          if [ "$ENABLE_SUSFS" = "true" ]; then
-            SUFFIX="${SUFFIX}-SUSFS"
-          fi
-          if [ "$ENABLE_NOMOUNT" = "true" ]; then
-            SUFFIX="${SUFFIX}-NoMount"
-          fi
+          if [ "$ENABLE_LXC_DOCKER" = "true" ]; then SUFFIX="${SUFFIX}-Docker"; fi
+          if [ "$ENABLE_KVM" = "true" ]; then SUFFIX="${SUFFIX}-KVM"; fi
+          if [ "$ENABLE_BBR" = "true" ]; then SUFFIX="${SUFFIX}-BBR"; fi
+          if [ "$ENABLE_SUSFS" = "true" ]; then SUFFIX="${SUFFIX}-SUSFS"; fi
+          if [ "$ENABLE_NOMOUNT" = "true" ]; then SUFFIX="${SUFFIX}-NoMount"; fi
           TAG="${BASE_DATE}-${SUFFIX}-build.${RUN_NUMBER}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "发布标签: ${TAG}"
 
-  # ================================
-  # 3. 矩阵构建
-  # ================================
   build:
     needs: [setup-matrix, prepare]
     if: |
@@ -209,33 +179,17 @@ jobs:
           find $GITHUB_WORKSPACE/kernel_workspace/gcc32 -maxdepth 3 -name "*-ld*" -type f 2>/dev/null
           find $GITHUB_WORKSPACE/kernel_workspace/gcc32 -maxdepth 3 -name "ld*" 2>/dev/null
 
-      # ============================================================
-      # 【关键改动】从 AOSP 官方 tar.gz 下载 Clang 9.0.1
-      # 优点：单一版本归档，解压后 bin/ 在根目录，结构干净
-      # ============================================================
       - name: 下载老版 Clang 工具链 (AOSP 官方 tar.gz, Clang 9.0.1 r353983c)
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
           rm -rf clang-aosp
           mkdir -p clang-aosp
-
-          echo "=== 下载 Clang tar.gz ==="
           echo "URL: ${{ env.CLANG_TARBALL }}"
-          wget -q --tries=3 --timeout=120 \
-            "${{ env.CLANG_TARBALL }}" \
-            -O clang.tar.gz \
+          wget -q --tries=3 --timeout=120 "${{ env.CLANG_TARBALL }}" -O clang.tar.gz \
             || { echo "!! 下载 Clang 失败"; exit 1; }
-
-          echo "=== 解压 ==="
           tar -xzf clang.tar.gz -C clang-aosp
-
-          echo "=== 检查目录结构 ==="
           ls -la clang-aosp/ | head -n 20
-
-          echo "=== Clang 版本信息 ==="
           $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/clang --version
-
-          echo "=== 检查 ld.lld / ld.gold ==="
           ls -la $GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin/ | grep -E 'ld|lld|gold' || true
 
       - name: 下载内核源码
@@ -253,7 +207,6 @@ jobs:
         if: matrix.root == 'kernelsu'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          echo "KSU_LOG: 下载并应用 RKSU 官方 4.9 补丁"
           wget https://github.com/rksuorg/kernel_patches/raw/master/manual_hook/kernel-4.9.patch -O ksu-4.9.patch
           patch -p1 < ksu-4.9.patch || { echo "补丁应用失败"; exit 1; }
 
@@ -261,7 +214,6 @@ jobs:
         if: matrix.root == 'resukisu'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          echo "KSU_LOG: 下载并应用 ReSukiSU 官方 4.9 补丁"
           wget https://github.com/ReSukiSU/ReSukiSU_Patches/raw/main/scope-minimized/kernel-4.9.patch -O ksu-4.9.patch
           patch -p1 < ksu-4.9.patch || { echo "补丁应用失败"; exit 1; }
 
@@ -269,7 +221,6 @@ jobs:
         if: env.ENABLE_SUSFS == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          echo "KSU_LOG: 启用 SUSFS"
           wget https://raw.githubusercontent.com/sanba0519/Kernel-patch/refs/heads/main/susfs_patch_to_4.9.patch -O susfs-4.9.patch
           patch -p1 -F 3 < susfs-4.9.patch || { echo "SUSFS 补丁应用失败"; exit 1; }
           sed -i 's/^orig_flow:$/orig_flow:;/' fs/notify/fdinfo.c
@@ -280,7 +231,6 @@ jobs:
         if: env.ENABLE_NOMOUNT == 'true'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
-          echo "KSU_LOG: 启用 NoMount VFS 挂载"
           curl -LfsS \
             https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh \
             -o nomount-setup.sh \
@@ -295,14 +245,12 @@ jobs:
           cd KernelSU.git
           COUNT=$(git rev-list --count HEAD)
           KSU_MANAGER_VERSION_CODE=$((29971 + COUNT))
-          echo "ksu_manager_version_code=$KSU_MANAGER_VERSION_CODE"
           echo "ksu_manager_version_code=$KSU_MANAGER_VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "$KSU_MANAGER_VERSION_CODE" > "$GITHUB_WORKSPACE/kernel_workspace/manager_version_kernelsu.txt"
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           rm -rf KernelSU
           curl -LSs "https://raw.githubusercontent.com/rsuntk/KernelSU/main/kernel/setup.sh" | bash
           if [ "$ENABLE_SUSFS" = "true" ]; then
-            echo "KSU_LOG: 应用 KernelSU SUSFS 内联钩子"
             curl -LfsS \
               https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/susfs_inline_hook_patches.sh \
               -o susfs_inline_hook_patches.sh
@@ -317,14 +265,12 @@ jobs:
           cd BakaSU.git
           COUNT=$(git rev-list --count HEAD)
           RESUKISU_MANAGER_VERSION_CODE=$((30000 + COUNT + 700))
-          echo "resukisu_manager_version_code=$RESUKISU_MANAGER_VERSION_CODE"
           echo "resukisu_manager_version_code=$RESUKISU_MANAGER_VERSION_CODE" >> "$GITHUB_OUTPUT"
           echo "$RESUKISU_MANAGER_VERSION_CODE" > "$GITHUB_WORKSPACE/kernel_workspace/manager_version_resukisu.txt"
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           rm -rf KernelSU
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash
           if [ "$ENABLE_SUSFS" = "true" ]; then
-            echo "KSU_LOG: 应用 ReSukiSU SUSFS 内联钩子"
             curl -LfsS \
               https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/susfs_inline_hook_patches.sh \
               -o susfs_inline_hook_patches.sh
@@ -332,7 +278,11 @@ jobs:
           fi
 
       # ============================================================
-      # adsprpc / ION 兼容性修复（保留）
+      # 【关键修复】adsprpc / ION 兼容性
+      #   1) ion_import_dma_buf_fd -> ion_import_dma_buf（保留）
+      #   2) msm_ion_do_cache_offset_op 重复符号
+      #      注意！该函数定义在头文件 msm_ion.h 里，不在 adsprpc.c 里
+      #      所以真正修复目标是：drivers/staging/android/ion/msm/msm_ion.h
       # ============================================================
       - name: 修复 adsprpc ION API 兼容性 + 重复符号
         run: |
@@ -351,21 +301,33 @@ jobs:
             echo "无 ion_import_dma_buf_fd 残留"
           fi
 
-          echo "=== [2/2] 处理 msm_ion_do_cache_offset_op 重复定义 ==="
-          if [ -f drivers/char/adsprpc.c ] && [ -f drivers/char/adsprpc_compat.c ]; then
-            A=$(grep -c "msm_ion_do_cache_offset_op" drivers/char/adsprpc.c || true)
-            B=$(grep -c "msm_ion_do_cache_offset_op" drivers/char/adsprpc_compat.c || true)
-            echo "adsprpc.c 中出现次数: $A"
-            echo "adsprpc_compat.c 中出现次数: $B"
-            sed -i -E 's/^([[:space:]]*)(int[[:space:]]+msm_ion_do_cache_offset_op[[:space:]]*\()/\1static \2/' \
-              drivers/char/adsprpc.c || true
-            grep -n "msm_ion_do_cache_offset_op" drivers/char/adsprpc.c drivers/char/adsprpc_compat.c || true
+          echo "=== [2/2] 修复 msm_ion_do_cache_offset_op 重复符号 ==="
+          HDR=drivers/staging/android/ion/msm/msm_ion.h
+          if [ ! -f "$HDR" ]; then
+            echo "!! 找不到 $HDR"
+          else
+            echo "--- 修复前 $HDR:200-215 ---"
+            sed -n '200,215p' "$HDR"
+
+            # 情况 A：已经是 static / static inline，不动
+            if grep -qE 'static[[:space:]]+(inline[[:space:]]+)?[^;]*msm_ion_do_cache_offset_op' "$HDR"; then
+              echo "已经是 static (inline)，跳过"
+            else
+              # 情况 B：给函数定义加 static inline
+              # 先尝试匹配 'int msm_ion_do_cache_offset_op('
+              sed -i -E 's/^([[:space:]]*)int([[:space:]]+msm_ion_do_cache_offset_op[[:space:]]*\()/\1static inline int\2/' "$HDR"
+              # 再尝试其它返回类型
+              sed -i -E 's/^([[:space:]]*)(void|long|unsigned[[:space:]]+long)([[:space:]]+msm_ion_do_cache_offset_op[[:space:]]*\()/\1static inline \2\3/' "$HDR"
+            fi
+
+            echo "--- 修复后 $HDR:200-215 ---"
+            sed -n '200,215p' "$HDR"
+
+            echo "--- grep 检查 ---"
+            grep -n "msm_ion_do_cache_offset_op" "$HDR" || echo "该文件里已无此符号"
           fi
 
-      # ============================================================
-      # pinctrl include 修复（drivers/ 全范围，兜底）
-      # ============================================================
-      - name: 修复 pinctrl include（drivers/ 全范围）
+      - name: pinctrl include 修复（drivers/ 全范围）
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
 
@@ -389,7 +351,6 @@ jobs:
             echo "符号 $sym -> 共修复 $count 个文件"
           }
 
-          echo "=== 修复 pinctrl 相关 ==="
           fix_include pinctrl_select_state  linux/pinctrl/consumer.h
           fix_include pinctrl_lookup_state  linux/pinctrl/consumer.h
           fix_include devm_pinctrl_get      linux/pinctrl/consumer.h
@@ -418,12 +379,8 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel_workspace
           wget https://raw.githubusercontent.com/tomxi1997/lxc-docker-support-for-android/refs/heads/main/runcpatch.sh
           chmod +x runcpatch.sh
-          if [ -f android-kernel/kernel/cgroup.c ]; then
-            ./runcpatch.sh android-kernel/kernel/cgroup.c
-          fi
-          if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then
-            ./runcpatch.sh android-kernel/kernel/cgroup/cgroup.c
-          fi
+          if [ -f android-kernel/kernel/cgroup.c ]; then ./runcpatch.sh android-kernel/kernel/cgroup.c; fi
+          if [ -f android-kernel/kernel/cgroup/cgroup.c ]; then ./runcpatch.sh android-kernel/kernel/cgroup/cgroup.c; fi
 
       - name: LXC/Docker - 应用 xt_qtaguid 补丁
         if: env.ENABLE_LXC_DOCKER == 'true'
@@ -450,15 +407,11 @@ jobs:
           echo "CONFIG_VHOST_NET=y" >> android-kernel/arch/arm64/configs/sirius_defconfig
           echo "CONFIG_VHOST_CROSS_ENDIAN_LEGACY=y" >> android-kernel/arch/arm64/configs/sirius_defconfig
 
-      # ============================================================
-      # 开始构建（使用老版 Clang 9.0.1）
-      # ============================================================
       - name: 开始构建内核
         id: build_kernel
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
 
-          # PATH 顺序：老版 clang 优先，gcc64/gcc32 提供 GNU ld
           export PATH=$GITHUB_WORKSPACE/kernel_workspace/clang-aosp/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin:$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin:$PATH
 
           echo "=== 当前使用的编译器/链接器 ==="
@@ -466,7 +419,6 @@ jobs:
           which aarch64-linux-android-ld || { echo "!! 未找到 aarch64-linux-android-ld"; exit 1; }
           which arm-linux-androideabi-ld  || { echo "!! 未找到 arm-linux-androideabi-ld"; exit 1; }
           aarch64-linux-android-ld --version | head -n1
-          aarch64-linux-android-ld --help 2>&1 | grep -i "supported emulations" -A2
 
           export KBUILD_BUILD_HOST=Github@EnderPhantomWing
           export KBUILD_BUILD_USER=EnderPhantomWing
@@ -477,14 +429,11 @@ jobs:
           export LOCALVERSION="-g${COMMIT_SHORT}-${RUN_NUMBER}-${BUILD_TIME}"
           echo "LOCALVERSION=${LOCALVERSION}"
 
-          # 显式指定 GNU ld
           export LD="$GITHUB_WORKSPACE/kernel_workspace/gcc64/bin/aarch64-linux-android-ld"
           export LD_COMPAT="$GITHUB_WORKSPACE/kernel_workspace/gcc32/bin/arm-linux-androideabi-ld"
 
-          # defconfig
           make -j$(nproc --all) O=out ARCH=arm64 sirius_defconfig
 
-          # BBR
           if [ "$ENABLE_BBR" = "true" ]; then
             echo "启用 BBR..."
             ./scripts/config --file out/.config \
@@ -501,55 +450,35 @@ jobs:
             KCFLAGS_EXTRA="-fuse-ld=bfd"
           fi
 
-          # Root / SUSFS
           if [ "$ENABLE_SUSFS" = "true" ]; then
-            echo "KSU_LOG: 启用 CONFIG_KSU + CONFIG_KSU_SUSFS (手动钩子)"
             ./scripts/config --file out/.config \
-              --enable KSU \
-              --enable KSU_SUSFS \
-              --enable KSU_MANUAL_HOOK \
-              --disable KSU_TRACEPOINT_HOOK
+              --enable KSU --enable KSU_SUSFS --enable KSU_MANUAL_HOOK --disable KSU_TRACEPOINT_HOOK
           else
-            echo "KSU_LOG: 启用 CONFIG_KSU + CONFIG_KSU_MANUAL_HOOK (无 SUSFS)"
             ./scripts/config --file out/.config \
-              --enable KSU \
-              --enable KSU_MANUAL_HOOK \
-              --disable KSU_SUSFS \
-              --disable KSU_TRACEPOINT_HOOK
+              --enable KSU --enable KSU_MANUAL_HOOK --disable KSU_SUSFS --disable KSU_TRACEPOINT_HOOK
           fi
 
-          # NoMount
           if [ "$ENABLE_NOMOUNT" = "true" ]; then
-            echo "KSU_LOG: 启用 NoMount VFS 挂载"
             ./scripts/config --file out/.config \
-              --enable CONFIG_NOMOUNT \
-              --enable CONFIG_KEYS
+              --enable CONFIG_NOMOUNT --enable CONFIG_KEYS
           else
-            echo "不启用 NoMount VFS 挂载"
             ./scripts/config --file out/.config --disable CONFIG_NOMOUNT
           fi
 
           ./scripts/config --file out/.config \
-            --enable NAMESPACES \
-            --enable DEVTMPFS \
-            --disable USER_NS \
-            --enable DEVTMPFS_MOUNT \
-            --enable SECTION_MISMATCH_WARN_ONLY
+            --enable NAMESPACES --enable DEVTMPFS --disable USER_NS \
+            --enable DEVTMPFS_MOUNT --enable SECTION_MISMATCH_WARN_ONLY
 
           make O=out ARCH=arm64 olddefconfig
 
           if [ "$ENABLE_NOMOUNT" = "true" ]; then
-            grep -qx 'CONFIG_NOMOUNT=y' out/.config \
-              && grep -qx 'CONFIG_KEYS=y' out/.config \
+            grep -qx 'CONFIG_NOMOUNT=y' out/.config && grep -qx 'CONFIG_KEYS=y' out/.config \
               || { echo "NoMount 或 CONFIG_KEYS 配置未生效，终止编译"; exit 1; }
           elif grep -Eq '^CONFIG_NOMOUNT=(y|m)$' out/.config; then
             echo "NoMount 未关闭，终止编译"
             exit 1
           fi
 
-          # ============================================================
-          # 使用老版 Clang 9.0.1 编译
-          # ============================================================
           make -j$(nproc --all) O=out ARCH=arm64 \
             CC="ccache clang" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
@@ -561,13 +490,10 @@ jobs:
 
           KERNEL_VERSION=$(cat out/include/config/kernel.release 2>/dev/null \
             | grep -E '^[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
-          if [ -z "$KERNEL_VERSION" ]; then
-            KERNEL_VERSION="unknown"
-          fi
+          if [ -z "$KERNEL_VERSION" ]; then KERNEL_VERSION="unknown"; fi
           echo "KERNEL_VERSION=${KERNEL_VERSION}"
           echo "$KERNEL_VERSION" > "$GITHUB_WORKSPACE/kernel_workspace/kernel_version_${{ matrix.root }}.txt"
 
-      # ---------- 生成产物名称 ----------
       - name: 创建 AK3 后缀
         id: gen_name
         run: |
@@ -584,7 +510,6 @@ jobs:
           echo "artifact_name=${NAME}" >> $GITHUB_OUTPUT
           echo "产物名称: ${NAME}"
 
-      # ---------- 打包 ----------
       - name: 构建 AnyKernel3 包
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace
@@ -598,7 +523,6 @@ jobs:
           (cd AnyKernel3 && zip -r9 "../${ZIP_NAME}" .)
           ls -lh "${ZIP_NAME}"
 
-      # ---------- 上传产物 ----------
       - name: 上传版本信息
         uses: actions/upload-artifact@v4
         with:
@@ -616,9 +540,8 @@ jobs:
 
       - name: 重命名内核镜像（带 root 后缀）
         run: |
-          SRC=kernel_workspace/android-kernel/out/arch/arm64/boot/Image.gz
-          DST=kernel_workspace/Image-${{ matrix.root }}.gz
-          cp "$SRC" "$DST"
+          cp kernel_workspace/android-kernel/out/arch/arm64/boot/Image.gz \
+             kernel_workspace/Image-${{ matrix.root }}.gz
 
       - name: 上传内核镜像
         uses: actions/upload-artifact@v4
@@ -626,9 +549,6 @@ jobs:
           name: Image-${{ matrix.root }}
           path: kernel_workspace/Image-${{ matrix.root }}.gz
 
-  # ================================
-  # 4. 摘要与发布
-  # ================================
   release:
     needs: [setup-matrix, prepare, build]
     if: |
@@ -689,13 +609,9 @@ jobs:
             echo "| Root Type | Artifact Name | Kernel Version | Root Manager Version |"
             echo "|-----------|---------------|----------|------------|"
             for root in $(echo "$ROOT_CONFIGS" | jq -r '.[]'); do
-              if [ "$root" = "resukisu" ]; then
-                NAME="sirius-SDM710-BakaSU"
-              elif [ "$root" = "kernelsu" ]; then
-                NAME="sirius-SDM710-RKSU"
-              else
-                NAME="sirius-SDM710-$root"
-              fi
+              if [ "$root" = "resukisu" ]; then NAME="sirius-SDM710-BakaSU"
+              elif [ "$root" = "kernelsu" ]; then NAME="sirius-SDM710-RKSU"
+              else NAME="sirius-SDM710-$root"; fi
               if [ "$ENABLE_LXC_DOCKER" = "true" ]; then NAME="${NAME}-Docker"; fi
               if [ "$ENABLE_KVM" = "true" ]; then NAME="${NAME}-KVM"; fi
               if [ "$ENABLE_BBR" = "true" ]; then NAME="${NAME}-BBR"; fi
