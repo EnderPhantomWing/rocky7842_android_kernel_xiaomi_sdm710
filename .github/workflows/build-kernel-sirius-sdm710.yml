@@ -74,6 +74,7 @@ jobs:
               ROOT_LIST="${ROOT_LIST} resukisu"
             fi
             if [ -z "$ROOT_LIST" ]; then
+              # 未选择任何 Root 管理器：构建默认内核
               ROOT_LIST="none"
             fi
             ROOT_CONFIGS=$(echo $ROOT_LIST | tr ' ' '\n' | jq -R . | jq -s -c .)
@@ -86,9 +87,7 @@ jobs:
 
   prepare:
     needs: setup-matrix
-    if: |
-      needs.setup-matrix.outputs.total-count != '0' &&
-      needs.setup-matrix.outputs.root-configs != '["none"]'
+    if: needs.setup-matrix.outputs.total-count != '0'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -110,6 +109,7 @@ jobs:
             BASE="All"
           elif [ "$COUNT" -eq 1 ]; then
             BASE=$(echo "$ROOT_CONFIGS" | jq -r '.[0]')
+            if [ "$BASE" = "none" ]; then BASE="Stock"; fi
           else
             BASE="none"
           fi
@@ -117,7 +117,7 @@ jobs:
           if [ "$ENABLE_LXC_DOCKER" = "true" ]; then SUFFIX="${SUFFIX}-Docker"; fi
           if [ "$ENABLE_KVM" = "true" ]; then SUFFIX="${SUFFIX}-KVM"; fi
           if [ "$ENABLE_BBR" = "true" ]; then SUFFIX="${SUFFIX}-BBR"; fi
-          if [ "$ENABLE_SUSFS" = "true" ]; then SUFFIX="${SUFFIX}-SUSFS"; fi
+          if [ "$ENABLE_SUSFS" = "true" ] && [ "$BASE" != "Stock" ]; then SUFFIX="${SUFFIX}-SUSFS"; fi
           if [ "$ENABLE_NOMOUNT" = "true" ]; then SUFFIX="${SUFFIX}-NoMount"; fi
           TAG="${BASE_DATE}-${SUFFIX}-build.${RUN_NUMBER}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -125,9 +125,7 @@ jobs:
 
   build:
     needs: [setup-matrix, prepare]
-    if: |
-      needs.setup-matrix.outputs.total-count != '0' &&
-      needs.setup-matrix.outputs.root-configs != '["none"]'
+    if: needs.setup-matrix.outputs.total-count != '0'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -217,8 +215,13 @@ jobs:
           wget https://github.com/ReSukiSU/ReSukiSU_Patches/raw/main/scope-minimized/kernel-4.9.patch -O ksu-4.9.patch
           patch -p1 < ksu-4.9.patch || { echo "补丁应用失败"; exit 1; }
 
+      - name: 默认内核 - 无 Root 管理器
+        if: matrix.root == 'none'
+        run: |
+          echo "未选择任何 Root 管理器，构建默认内核（无 KernelSU / BakaSU）。"
+
       - name: SUSFS - 启用 SUSFS
-        if: env.ENABLE_SUSFS == 'true'
+        if: env.ENABLE_SUSFS == 'true' && matrix.root != 'none'
         run: |
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
           wget https://raw.githubusercontent.com/sanba0519/Kernel-patch/refs/heads/main/susfs_patch_to_4.9.patch -O susfs-4.9.patch
@@ -287,7 +290,6 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel_workspace/android-kernel
 
           echo "=== [1/2] 修复 ion_import_dma_buf_fd -> ion_import_dma_buf（全仓库）==="
-          # 全仓库扫描：不再局限于 adsprpc.c，qseecom.c 等也有
           COUNT=0
           for f in $(grep -rl '\bion_import_dma_buf_fd\b' --include='*.c' drivers/ include/ 2>/dev/null); do
             sed -i 's/\bion_import_dma_buf_fd\b/ion_import_dma_buf/g' "$f"
@@ -323,12 +325,6 @@ jobs:
 
       # ============================================================
       # 【通用修复】头文件里非 static 函数定义 -> static inline
-      #   已遇到：
-      #     - drivers/staging/android/ion/msm/msm_ion.h
-      #       msm_ion_do_cache_offset_op
-      #     - include/linux/usb_bam.h
-      #       usb_bam_alloc_fifos / usb_bam_free_fifos / msm_do_bam_disable_enable
-      #   以后遇到新头文件，只需在末尾加一行 fix_header_funcs 即可
       # ============================================================
       - name: 修复头文件中非 static 函数（防 multiple definition）
         run: |
@@ -352,26 +348,20 @@ jobs:
                 echo "  该文件中未找到此函数"
                 continue
               fi
-              # 如果已经是 static / static inline，跳过
               if grep -qE "static[[:space:]]+(inline[[:space:]]+)?[^;=]*\b$FUNC\b[[:space:]]*\(" "$HDR"; then
                 echo "  已是 static (inline)，跳过"
                 continue
               fi
-              # 加 static inline
               sed -i -E "s/^([[:space:]]*)(int|void|long|bool|ssize_t|size_t|unsigned[[:space:]]+int|unsigned[[:space:]]+long)([[:space:]]+${FUNC}[[:space:]]*\()/\1static inline \2\3/" "$HDR"
               echo "  修改后："
               grep -nE "[[:space:]]${FUNC}[[:space:]]*\(" "$HDR" | head -n 3 || true
             done
           }
 
-          # ---------- 已知需要修复的头文件 ----------
           fix_header_funcs "include/linux/usb_bam.h" \
             usb_bam_alloc_fifos \
             usb_bam_free_fifos \
             msm_do_bam_disable_enable
-
-          # ---------- 以后遇到新头文件在这里追加 ----------
-          # fix_header_funcs "include/linux/xxx.h" func_a func_b
 
           echo ""
           echo "--- 校验 usb_bam.h ---"
@@ -501,12 +491,19 @@ jobs:
             KCFLAGS_EXTRA="-fuse-ld=bfd"
           fi
 
-          if [ "$ENABLE_SUSFS" = "true" ]; then
+          if [ "${{ matrix.root }}" = "none" ]; then
+            # 默认内核：不启用任何 Root 管理器相关配置
+            echo "默认内核：关闭 KSU 相关配置"
             ./scripts/config --file out/.config \
-              --enable KSU --enable KSU_SUSFS --enable KSU_MANUAL_HOOK --disable KSU_TRACEPOINT_HOOK
+              --disable KSU --disable KSU_SUSFS --disable KSU_MANUAL_HOOK --disable KSU_TRACEPOINT_HOOK
           else
-            ./scripts/config --file out/.config \
-              --enable KSU --enable KSU_MANUAL_HOOK --disable KSU_SUSFS --disable KSU_TRACEPOINT_HOOK
+            if [ "$ENABLE_SUSFS" = "true" ]; then
+              ./scripts/config --file out/.config \
+                --enable KSU --enable KSU_SUSFS --enable KSU_MANUAL_HOOK --disable KSU_TRACEPOINT_HOOK
+            else
+              ./scripts/config --file out/.config \
+                --enable KSU --enable KSU_MANUAL_HOOK --disable KSU_SUSFS --disable KSU_TRACEPOINT_HOOK
+            fi
           fi
 
           if [ "$ENABLE_NOMOUNT" = "true" ]; then
@@ -550,13 +547,15 @@ jobs:
         run: |
           if [ "${{ matrix.root }}" = "resukisu" ]; then
             NAME="sirius-SDM710-BakaSU"
-          else
+          elif [ "${{ matrix.root }}" = "kernelsu" ]; then
             NAME="sirius-SDM710-RKSU"
+          else
+            NAME="sirius-SDM710-Stock"
           fi
           if [ "$ENABLE_LXC_DOCKER" = "true" ]; then NAME="${NAME}-Docker"; fi
           if [ "$ENABLE_KVM" = "true" ]; then NAME="${NAME}-KVM"; fi
           if [ "$ENABLE_BBR" = "true" ]; then NAME="${NAME}-BBR"; fi
-          if [ "$ENABLE_SUSFS" = "true" ]; then NAME="${NAME}-SUSFS"; fi
+          if [ "$ENABLE_SUSFS" = "true" ] && [ "${{ matrix.root }}" != "none" ]; then NAME="${NAME}-SUSFS"; fi
           if [ "$ENABLE_NOMOUNT" = "true" ]; then NAME="${NAME}-NoMount"; fi
           echo "artifact_name=${NAME}" >> $GITHUB_OUTPUT
           echo "产物名称: ${NAME}"
@@ -602,9 +601,7 @@ jobs:
 
   release:
     needs: [setup-matrix, prepare, build]
-    if: |
-      needs.setup-matrix.outputs.total-count != '0' &&
-      needs.setup-matrix.outputs.root-configs != '["none"]'
+    if: needs.setup-matrix.outputs.total-count != '0'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -624,7 +621,7 @@ jobs:
             KV_FILE="artifacts/kernel_version_${root}.txt"
             MV_FILE="artifacts/manager_version_${root}.txt"
             if [ -f "$KV_FILE" ]; then KV=$(cat "$KV_FILE"); else KV="未知"; fi
-            if [ -f "$MV_FILE" ]; then MV=$(cat "$MV_FILE"); else MV="未知"; fi
+            if [ -f "$MV_FILE" ]; then MV=$(cat "$MV_FILE"); else MV="N/A"; fi
             SUMMARY="${SUMMARY}${root}: Kernel=${KV}, Manager=${MV}\n"
           done
           echo "summary<<EOF" >> "$GITHUB_OUTPUT"
@@ -662,11 +659,11 @@ jobs:
             for root in $(echo "$ROOT_CONFIGS" | jq -r '.[]'); do
               if [ "$root" = "resukisu" ]; then NAME="sirius-SDM710-BakaSU"
               elif [ "$root" = "kernelsu" ]; then NAME="sirius-SDM710-RKSU"
-              else NAME="sirius-SDM710-$root"; fi
+              else NAME="sirius-SDM710-Stock"; fi
               if [ "$ENABLE_LXC_DOCKER" = "true" ]; then NAME="${NAME}-Docker"; fi
               if [ "$ENABLE_KVM" = "true" ]; then NAME="${NAME}-KVM"; fi
               if [ "$ENABLE_BBR" = "true" ]; then NAME="${NAME}-BBR"; fi
-              if [ "$ENABLE_SUSFS" = "true" ]; then NAME="${NAME}-SUSFS"; fi
+              if [ "$ENABLE_SUSFS" = "true" ] && [ "$root" != "none" ]; then NAME="${NAME}-SUSFS"; fi
               if [ "$ENABLE_NOMOUNT" = "true" ]; then NAME="${NAME}-NoMount"; fi
               KV_FILE="artifacts/kernel_version_${root}.txt"
               MV_FILE="artifacts/manager_version_${root}.txt"
